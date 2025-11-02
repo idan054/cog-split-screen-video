@@ -1,5 +1,17 @@
 # Prediction interface for Cog ⚙️
-# https://cog.run/python
+# https://github.com/replicate/cog/blob/main/docs/python.md
+
+# Test:
+# python3 predict.py
+
+# DEPLOY: 
+# ⚠️ VERSIONS NOT WORKS ON REPLICATE!!! 
+# ⚠️ DEPLOY AS A NEW MODEL - Updated with new layout names!
+# 1. Create New model on Replicate.com Called "sarra-split-screen-v2"
+# 2. cog push r8.im/idan054/sarra-split-screen-v2
+# 3. Don't forget to update the usage Like "version:idan054/sarra-split-screen-v2:NEW_VERSION_HASH"
+# 📱 New Features: "16:9 Side by side" & "9:16 Top & Bottom" layouts with smart cropping!
+
 
 from cog import BasePredictor, Input, Path as CogPath
 import subprocess
@@ -11,8 +23,11 @@ import os
 
 # Constants
 DEFAULT_FPS = 30
-MAX_OUTPUT_WIDTH = 1920
-MAX_OUTPUT_HEIGHT = 1080
+# Standard output dimensions
+LANDSCAPE_WIDTH = 1920
+LANDSCAPE_HEIGHT = 1080
+PORTRAIT_WIDTH = 1080
+PORTRAIT_HEIGHT = 1920
 DEFAULT_AUDIO_BITRATE = "128k"
 FFMPEG_TIMEOUT = 600
 
@@ -72,46 +87,44 @@ class VideoProcessor:
         return value if value % 2 == 0 else value - 1
     
     def _calculate_layout_dimensions(self, video1_info: Dict, video2_info: Dict, 
-                                   layout: str) -> Dict[str, int]:
-        """Calculate optimal dimensions for the given layout"""
-        if layout == "left and right":
-            total_width = video1_info['width'] + video2_info['width']
-            max_height = max(video1_info['height'], video2_info['height'])
+                                   layout: str) -> Dict[str, Any]:
+        """Calculate optimal dimensions for the given layout with standard aspect ratios"""
+        if layout == "16:9 Side by side":
+            # For side-by-side, output should be 16:9 (landscape)
+            output_width = LANDSCAPE_WIDTH
+            output_height = LANDSCAPE_HEIGHT
             
-            if total_width <= MAX_OUTPUT_WIDTH:
-                return {
-                    'width1': self._make_even(video1_info['width']),
-                    'width2': self._make_even(video2_info['width']),
-                    'height': self._make_even(max_height)
-                }
-            else:
-                scale_factor = MAX_OUTPUT_WIDTH / total_width
-                return {
-                    'width1': self._make_even(int(video1_info['width'] * scale_factor)),
-                    'width2': self._make_even(int(video2_info['width'] * scale_factor)),
-                    'height': self._make_even(int(max_height * scale_factor))
-                }
-        else:  # top and bottom
-            max_width = max(video1_info['width'], video2_info['width'])
-            total_height = video1_info['height'] + video2_info['height']
+            # Each video gets half the width
+            target_width = output_width // 2
+            target_height = output_height
             
-            if total_height <= MAX_OUTPUT_HEIGHT:
-                return {
-                    'width': self._make_even(max_width),
-                    'height1': self._make_even(video1_info['height']),
-                    'height2': self._make_even(video2_info['height'])
-                }
-            else:
-                scale_factor = MAX_OUTPUT_HEIGHT / total_height
-                return {
-                    'width': self._make_even(int(max_width * scale_factor)),
-                    'height1': self._make_even(int(video1_info['height'] * scale_factor)),
-                    'height2': self._make_even(int(video2_info['height'] * scale_factor))
-                }
+            return {
+                'output_width': output_width,
+                'output_height': output_height,
+                'video_width': self._make_even(target_width),
+                'video_height': self._make_even(target_height),
+                'layout_type': 'horizontal'
+            }
+        else:  # 9:16 Top & Bottom
+            # For top/bottom, output should be 9:16 (portrait)
+            output_width = PORTRAIT_WIDTH
+            output_height = PORTRAIT_HEIGHT
+            
+            # Each video gets half the height
+            target_width = output_width
+            target_height = output_height // 2
+            
+            return {
+                'output_width': output_width,
+                'output_height': output_height,
+                'video_width': self._make_even(target_width),
+                'video_height': self._make_even(target_height),
+                'layout_type': 'vertical'
+            }
     
     def build_filter_complex(self, video1_info: Dict, video2_info: Dict,
                            layout: str, loop_videos: bool, target_duration: float) -> str:
-        """Build complete filter complex for combining videos"""
+        """Build complete filter complex for combining videos with smart cropping"""
         dimensions = self._calculate_layout_dimensions(video1_info, video2_info, layout)
         
         filters = []
@@ -123,42 +136,83 @@ class VideoProcessor:
         print(f"Video 1 duration: {video1_info['duration']:.2f}s, needs loop: {loop1_needed}")
         print(f"Video 2 duration: {video2_info['duration']:.2f}s, needs loop: {loop2_needed}")
         print(f"Target duration: {target_duration:.2f}s")
+        print(f"Output dimensions: {dimensions['output_width']}x{dimensions['output_height']}")
+        print(f"Each video target: {dimensions['video_width']}x{dimensions['video_height']}")
         
-        # Process video 1 - simple approach
+        # Process video 1 - with looping if needed
         if loop1_needed:
             filters.append("[0:v]loop=loop=-1:size=32767:start=0[v1_looped]")
             v1_source = "[v1_looped]"
         else:
             v1_source = "[0:v]"
         
-        # Process video 2 - simple approach  
+        # Process video 2 - with looping if needed
         if loop2_needed:
             filters.append("[1:v]loop=loop=-1:size=32767:start=0[v2_looped]")
             v2_source = "[v2_looped]"
         else:
             v2_source = "[1:v]"
         
-        # Scale and set framerate for both videos
-        if layout == "left and right":
-            v1_width, v1_height = dimensions['width1'], dimensions['height']
-            v2_width, v2_height = dimensions['width2'], dimensions['height']
-        else:  # top and bottom
-            v1_width, v1_height = dimensions['width'], dimensions['height1']
-            v2_width, v2_height = dimensions['width'], dimensions['height2']
+        # Smart crop and scale for video 1
+        v1_filter = self._build_crop_scale_filter(
+            v1_source, video1_info, 
+            dimensions['video_width'], dimensions['video_height'], 
+            "v1_final"
+        )
+        filters.append(v1_filter)
         
-        # Scale video 1
-        filters.append(f"{v1_source}scale={v1_width}:{v1_height}:flags=fast_bilinear,fps={DEFAULT_FPS}[v1_final]")
+        # Smart crop and scale for video 2
+        v2_filter = self._build_crop_scale_filter(
+            v2_source, video2_info, 
+            dimensions['video_width'], dimensions['video_height'], 
+            "v2_final"
+        )
+        filters.append(v2_filter)
         
-        # Scale video 2  
-        filters.append(f"{v2_source}scale={v2_width}:{v2_height}:flags=fast_bilinear,fps={DEFAULT_FPS}[v2_final]")
-        
-        # Combine videos
-        if layout == "left and right":
+        # Combine videos based on layout
+        if layout == "16:9 Side by side":
             filters.append("[v1_final][v2_final]hstack=inputs=2[output]")
-        else:  # top and bottom
+        else:  # 9:16 Top & Bottom
             filters.append("[v1_final][v2_final]vstack=inputs=2[output]")
         
         return ";".join(filters)
+    
+    def _build_crop_scale_filter(self, source: str, video_info: Dict, 
+                               target_width: int, target_height: int, 
+                               output_label: str) -> str:
+        """Build a smart crop and scale filter for a video"""
+        input_width = video_info['width']
+        input_height = video_info['height']
+        
+        # Calculate aspect ratios
+        input_aspect = input_width / input_height
+        target_aspect = target_width / target_height
+        
+        if abs(input_aspect - target_aspect) < 0.01:
+            # Aspect ratios are very close, just scale
+            return f"{source}scale={target_width}:{target_height}:flags=fast_bilinear,fps={DEFAULT_FPS}[{output_label}]"
+        
+        if input_aspect > target_aspect:
+            # Input is wider, crop width (center crop)
+            crop_width = int(input_height * target_aspect)
+            crop_height = input_height
+            crop_x = (input_width - crop_width) // 2
+            crop_y = 0
+        else:
+            # Input is taller, crop height (center crop)
+            crop_width = input_width
+            crop_height = int(input_width / target_aspect)
+            crop_x = 0
+            crop_y = (input_height - crop_height) // 2
+        
+        # Ensure crop dimensions are even
+        crop_width = self._make_even(crop_width)
+        crop_height = self._make_even(crop_height)
+        crop_x = self._make_even(crop_x)
+        crop_y = self._make_even(crop_y)
+        
+        # Build the filter: crop first, then scale, then set fps
+        return f"{source}crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={target_width}:{target_height}:flags=fast_bilinear,fps={DEFAULT_FPS}[{output_label}]"
     
     def build_encoding_args(self, quality_preset: str, hw_accel: Optional[str] = None) -> List[str]:
         """Build encoding arguments based on hardware acceleration and quality"""
@@ -345,8 +399,8 @@ class Predictor(BasePredictor):
         video_2: CogPath = Input(description="Second video file"),
         layout: str = Input(
             description="Layout for combining videos",
-            choices=["left and right", "top and bottom"],
-            default="left and right"
+            choices=["16:9 Side by side", "9:16 Top & Bottom"],
+            default="16:9 Side by side"
         ),
         duration_source: str = Input(
             description="Which video's duration to use",
