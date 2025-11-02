@@ -7,9 +7,9 @@
 # DEPLOY: 
 # ⚠️ VERSIONS NOT WORKS ON REPLICATE!!! 
 # ⚠️ DEPLOY AS A NEW MODEL - Updated with new layout names!
-# 1. Create New model on Replicate.com Called "sarra-split-screen-v2"
-# 2. cog push r8.im/idan054/sarra-split-screen-v2
-# 3. Don't forget to update the usage Like "version:idan054/sarra-split-screen-v2:NEW_VERSION_HASH"
+# 1. Create New model on Replicate.com Called "sarra-split-screen-v1"
+# 2. cog push r8.im/idan054/sarra-split-screen-v1
+# 3. Don't forget to update the usage Like "version:idan054/sarra-split-screen-v1:5cc24e000096bd3590c5b5b2e95ea7c0c229d7f5bca912890780184041ab74ed"
 # 📱 New Features: "16:9 Side by side" & "9:16 Top & Bottom" layouts with smart cropping!
 
 
